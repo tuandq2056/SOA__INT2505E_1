@@ -572,6 +572,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          $ref: '#/components/responses/ChatServiceUnavailable'
 
   /api/v1/conversations/{conversation_id}/attachments/{attachment_id}/content:
     get:
@@ -609,6 +611,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          $ref: '#/components/responses/ChatServiceUnavailable'
 
   /api/v1/conversations/{conversation_id}/messages:
     get:
@@ -650,6 +654,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          $ref: '#/components/responses/ChatServiceUnavailable'
 
   /api/v1/conversations/{conversation_id}/messages/search:
     get:
@@ -683,6 +689,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          $ref: '#/components/responses/ChatServiceUnavailable'
 
   /api/v1/conversations/{conversation_id}/read-state:
     get:
@@ -705,6 +713,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          $ref: '#/components/responses/ChatServiceUnavailable'
     put:
       tags: [Chat]
       operationId: putReadState
@@ -735,6 +745,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          $ref: '#/components/responses/ChatServiceUnavailable'
 
   /api/v1/conversations/{conversation_id}/unread-summary:
     post:
@@ -763,7 +775,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '503':
-          description: SUMMARY_UNAVAILABLE
+          description: SUMMARY_UNAVAILABLE, SOCIAL_UNAVAILABLE, or CHAT_UNAVAILABLE
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -871,6 +883,11 @@ components:
   responses:
     Unauthenticated:
       description: UNAUTHENTICATED
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    ChatServiceUnavailable:
+      description: SOCIAL_UNAVAILABLE or CHAT_UNAVAILABLE
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
