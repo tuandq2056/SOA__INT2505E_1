@@ -1,0 +1,1448 @@
+asyncapi: 3.0.0
+info:
+  title: WebChat realtime API
+  version: 1.0.0
+  description: >
+    WebSocket contract between the browser and the Chat service. REST operations
+    and the shared
+
+    data schemas (Message, PublicUser, ErrorCode) live in `openapi.yaml` in the
+    same folder.
+
+
+    Rules:
+
+    - Every frame is a UTF-8 JSON text frame of at most 32 KiB with a `type`
+    field.
+
+    - The client sends `session.authenticate` within 5 seconds of opening the
+    socket; the token is
+      never placed in the URL. Any other frame before `session.ready` returns `error` and closes.
+    - `message.ack` is sent only after the message is committed to PostgreSQL. A
+    retry keeps the
+      same `client_message_id` and the same content; the server then returns the stored message
+      with `replayed=true`. The same key with different content returns CLIENT_MESSAGE_ID_CONFLICT.
+    - After a reconnect the client authenticates, subscribes, buffers events,
+    fetches the missing
+      pages with REST `GET .../messages?after_seq=…&through_seq=latest_seq`, merges by
+      `message.id`, renders by `seq`, then retries the messages that were never acknowledged.
+  contact:
+    name: Nhóm 9 – INT3505E_1
+    url: https://github.com/tuandq2056/SOA__INT2505E_1
+defaultContentType: application/json
+servers:
+  local:
+    host: localhost:8080
+    protocol: ws
+    description: Local docker compose stack (WSS in deployed environments).
+channels:
+  chat:
+    address: /ws/v1/chat
+    description: >-
+      One socket per browser tab, multiplexing every conversation the user
+      subscribes to.
+    servers:
+      - $ref: '#/servers/local'
+    messages:
+      sessionAuthenticate:
+        name: session.authenticate
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - type
+            - request_id
+            - access_token
+          properties:
+            type:
+              type: string
+              const: session.authenticate
+            request_id:
+              type: string
+              format: uuid
+              description: Created by the client for each frame; echoed in the reply.
+            access_token:
+              type: string
+              description: JWT from POST /api/v1/auth/login (aud=webchat).
+        examples:
+          - payload:
+              type: session.authenticate
+              request_id: 6a000000-0000-4000-8000-000000000001
+              access_token: example-token
+      sessionReady:
+        name: session.ready
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - type
+            - request_id
+            - session_id
+            - user_id
+            - expires_at
+          properties:
+            type:
+              type: string
+              const: session.ready
+            request_id:
+              type: string
+              format: uuid
+              description: Created by the client for each frame; echoed in the reply.
+            session_id:
+              type: string
+              format: uuid
+            user_id:
+              type: string
+              format: uuid
+            expires_at:
+              type: string
+              format: date-time
+              description: Token expiry; the socket closes then.
+      conversationSubscribe:
+        name: conversation.subscribe
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - type
+            - request_id
+            - conversation_id
+          properties:
+            type:
+              type: string
+              const: conversation.subscribe
+            request_id:
+              type: string
+              format: uuid
+              description: Created by the client for each frame; echoed in the reply.
+            conversation_id:
+              type: string
+              format: uuid
+      conversationSubscribed:
+        name: conversation.subscribed
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - type
+            - request_id
+            - conversation_id
+            - latest_seq
+          properties:
+            type:
+              type: string
+              const: conversation.subscribed
+            request_id:
+              type: string
+              format: uuid
+              description: Created by the client for each frame; echoed in the reply.
+            conversation_id:
+              type: string
+              format: uuid
+            latest_seq:
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+              description: Upper bound for the REST backfill after a reconnect.
+      conversationUnsubscribe:
+        name: conversation.unsubscribe
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - type
+            - request_id
+            - conversation_id
+          properties:
+            type:
+              type: string
+              const: conversation.unsubscribe
+            request_id:
+              type: string
+              format: uuid
+              description: Created by the client for each frame; echoed in the reply.
+            conversation_id:
+              type: string
+              format: uuid
+      conversationUnsubscribed:
+        name: conversation.unsubscribed
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - type
+            - request_id
+            - conversation_id
+          properties:
+            type:
+              type: string
+              const: conversation.unsubscribed
+            request_id:
+              type: string
+              format: uuid
+              description: Created by the client for each frame; echoed in the reply.
+            conversation_id:
+              type: string
+              format: uuid
+      messageSend:
+        name: message.send
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - type
+            - request_id
+            - conversation_id
+            - client_message_id
+            - content
+          properties:
+            type:
+              type: string
+              const: message.send
+            request_id:
+              type: string
+              format: uuid
+              description: Created by the client for each frame; echoed in the reply.
+            conversation_id:
+              type: string
+              format: uuid
+            client_message_id:
+              type: string
+              format: uuid
+              description: >-
+                Created by the client; kept unchanged on every retry of the same
+                message.
+            content:
+              oneOf:
+                - type: object
+                  additionalProperties: false
+                  required:
+                    - type
+                    - text
+                  properties:
+                    type:
+                      type: string
+                      const: text
+                    text:
+                      type: string
+                      minLength: 1
+                      maxLength: 4000
+                - type: object
+                  additionalProperties: false
+                  required:
+                    - type
+                    - attachment_id
+                  properties:
+                    type:
+                      type: string
+                      enum:
+                        - audio
+                        - file
+                    attachment_id:
+                      type: string
+                      format: uuid
+                      description: >
+                        A pending attachment uploaded by the sender to the same
+                        conversation. Its kind must
+
+                        match `type` (ATTACHMENT_KIND_MISMATCH) and it can be
+                        bound only once (ATTACHMENT_IN_USE).
+        examples:
+          - payload:
+              type: message.send
+              request_id: 6a000000-0000-4000-8000-000000000002
+              conversation_id: c1000000-0000-4000-8000-000000000001
+              client_message_id: d1000000-0000-4000-8000-000000000001
+              content:
+                type: text
+                text: Chào Lâm!
+      messageAck:
+        name: message.ack
+        payload:
+          schemaFormat: application/schema+json;version=draft-07
+          schema:
+            type: object
+            additionalProperties: false
+            required:
+              - type
+              - request_id
+              - message
+              - replayed
+            properties:
+              type:
+                type: string
+                const: message.ack
+              request_id:
+                type: string
+                format: uuid
+                description: Created by the client for each frame; echoed in the reply.
+              message:
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - conversation_id
+                  - seq
+                  - sender
+                  - created_at
+                  - client_message_id
+                  - content
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  conversation_id:
+                    type: string
+                    format: uuid
+                  seq:
+                    type: integer
+                    format: int64
+                    minimum: 1
+                    maximum: 9007199254740991
+                  sender:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - id
+                      - username
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      username:
+                        type: string
+                  created_at:
+                    type: string
+                    format: date-time
+                  client_message_id:
+                    type: string
+                    format: uuid
+                  content:
+                    oneOf:
+                      - type: object
+                        additionalProperties: false
+                        required:
+                          - type
+                          - text
+                        properties:
+                          type:
+                            type: string
+                            enum:
+                              - text
+                          text:
+                            type: string
+                            minLength: 1
+                            maxLength: 4000
+                      - type: object
+                        additionalProperties: false
+                        required:
+                          - type
+                          - attachment
+                        properties:
+                          type:
+                            type: string
+                            enum:
+                              - audio
+                          attachment:
+                            allOf:
+                              - type: object
+                                additionalProperties: false
+                                required:
+                                  - id
+                                  - kind
+                                  - file_name
+                                  - media_type
+                                  - byte_size
+                                properties:
+                                  id:
+                                    type: string
+                                    format: uuid
+                                  kind:
+                                    type: string
+                                    enum:
+                                      - audio
+                                      - file
+                                  file_name:
+                                    type: string
+                                  media_type:
+                                    type: string
+                                  byte_size:
+                                    type: integer
+                                    minimum: 1
+                                  duration_ms:
+                                    type: integer
+                                    minimum: 0
+                                    maximum: 300000
+                                    description: >-
+                                      Present only when kind=audio (required
+                                      inside StoredAudioContent).
+                              - required:
+                                  - duration_ms
+                                properties:
+                                  kind:
+                                    const: audio
+                      - type: object
+                        additionalProperties: false
+                        required:
+                          - type
+                          - attachment
+                        properties:
+                          type:
+                            type: string
+                            enum:
+                              - file
+                          attachment:
+                            allOf:
+                              - type: object
+                                additionalProperties: false
+                                required:
+                                  - id
+                                  - kind
+                                  - file_name
+                                  - media_type
+                                  - byte_size
+                                properties:
+                                  id:
+                                    type: string
+                                    format: uuid
+                                  kind:
+                                    type: string
+                                    enum:
+                                      - audio
+                                      - file
+                                  file_name:
+                                    type: string
+                                  media_type:
+                                    type: string
+                                  byte_size:
+                                    type: integer
+                                    minimum: 1
+                                  duration_ms:
+                                    type: integer
+                                    minimum: 0
+                                    maximum: 300000
+                                    description: >-
+                                      Present only when kind=audio (required
+                                      inside StoredAudioContent).
+                              - properties:
+                                  kind:
+                                    const: file
+                    discriminator:
+                      propertyName: type
+                      mapping:
+                        text: '#/components/schemas/TextContent'
+                        audio: '#/components/schemas/StoredAudioContent'
+                        file: '#/components/schemas/StoredFileContent'
+              replayed:
+                type: boolean
+                description: >-
+                  true when the same client_message_id and content were already
+                  stored.
+      messageCreated:
+        name: message.created
+        payload:
+          schemaFormat: application/schema+json;version=draft-07
+          schema:
+            type: object
+            additionalProperties: false
+            required:
+              - type
+              - message
+            properties:
+              type:
+                type: string
+                const: message.created
+              message:
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - conversation_id
+                  - seq
+                  - sender
+                  - created_at
+                  - client_message_id
+                  - content
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  conversation_id:
+                    type: string
+                    format: uuid
+                  seq:
+                    type: integer
+                    format: int64
+                    minimum: 1
+                    maximum: 9007199254740991
+                  sender:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - id
+                      - username
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      username:
+                        type: string
+                  created_at:
+                    type: string
+                    format: date-time
+                  client_message_id:
+                    type: string
+                    format: uuid
+                  content:
+                    oneOf:
+                      - type: object
+                        additionalProperties: false
+                        required:
+                          - type
+                          - text
+                        properties:
+                          type:
+                            type: string
+                            enum:
+                              - text
+                          text:
+                            type: string
+                            minLength: 1
+                            maxLength: 4000
+                      - type: object
+                        additionalProperties: false
+                        required:
+                          - type
+                          - attachment
+                        properties:
+                          type:
+                            type: string
+                            enum:
+                              - audio
+                          attachment:
+                            allOf:
+                              - type: object
+                                additionalProperties: false
+                                required:
+                                  - id
+                                  - kind
+                                  - file_name
+                                  - media_type
+                                  - byte_size
+                                properties:
+                                  id:
+                                    type: string
+                                    format: uuid
+                                  kind:
+                                    type: string
+                                    enum:
+                                      - audio
+                                      - file
+                                  file_name:
+                                    type: string
+                                  media_type:
+                                    type: string
+                                  byte_size:
+                                    type: integer
+                                    minimum: 1
+                                  duration_ms:
+                                    type: integer
+                                    minimum: 0
+                                    maximum: 300000
+                                    description: >-
+                                      Present only when kind=audio (required
+                                      inside StoredAudioContent).
+                              - required:
+                                  - duration_ms
+                                properties:
+                                  kind:
+                                    const: audio
+                      - type: object
+                        additionalProperties: false
+                        required:
+                          - type
+                          - attachment
+                        properties:
+                          type:
+                            type: string
+                            enum:
+                              - file
+                          attachment:
+                            allOf:
+                              - type: object
+                                additionalProperties: false
+                                required:
+                                  - id
+                                  - kind
+                                  - file_name
+                                  - media_type
+                                  - byte_size
+                                properties:
+                                  id:
+                                    type: string
+                                    format: uuid
+                                  kind:
+                                    type: string
+                                    enum:
+                                      - audio
+                                      - file
+                                  file_name:
+                                    type: string
+                                  media_type:
+                                    type: string
+                                  byte_size:
+                                    type: integer
+                                    minimum: 1
+                                  duration_ms:
+                                    type: integer
+                                    minimum: 0
+                                    maximum: 300000
+                                    description: >-
+                                      Present only when kind=audio (required
+                                      inside StoredAudioContent).
+                              - properties:
+                                  kind:
+                                    const: file
+                    discriminator:
+                      propertyName: type
+                      mapping:
+                        text: '#/components/schemas/TextContent'
+                        audio: '#/components/schemas/StoredAudioContent'
+                        file: '#/components/schemas/StoredFileContent'
+      error:
+        name: error
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - type
+            - request_id
+            - code
+            - message
+            - retryable
+          properties:
+            type:
+              type: string
+              const: error
+            request_id:
+              oneOf:
+                - type: string
+                  format: uuid
+                  description: Created by the client for each frame; echoed in the reply.
+                - type: 'null'
+              description: The frame that failed, or null for an error not tied to a frame.
+            code:
+              type: string
+              enum:
+                - UNAUTHENTICATED
+                - INVALID_CREDENTIALS
+                - USERNAME_TAKEN
+                - USER_NOT_FOUND
+                - NOT_FOUND
+                - GOOGLE_DISABLED
+                - GOOGLE_UNAVAILABLE
+                - GOOGLE_CODE_INVALID
+                - OAUTH_STATE_INVALID
+                - VALIDATION_ERROR
+                - SELF_INVITE
+                - ALREADY_FRIENDS
+                - INCOMING_REQUEST_EXISTS
+                - ACTION_FORBIDDEN
+                - REQUEST_NOT_FOUND
+                - REQUEST_CLOSED
+                - INVALID_CURSOR
+                - SELF_CONVERSATION
+                - FRIENDSHIP_REQUIRED
+                - CONVERSATION_NOT_FOUND
+                - INVALID_MEMBERS
+                - IDEMPOTENCY_CONFLICT
+                - ATTACHMENT_NOT_FOUND
+                - INVALID_ATTACHMENT
+                - UPLOAD_TOO_LARGE
+                - UNSUPPORTED_MEDIA_TYPE
+                - INVALID_RANGE
+                - READ_AHEAD
+                - SUMMARY_UNAVAILABLE
+                - SOCIAL_UNAVAILABLE
+                - CHAT_UNAVAILABLE
+                - IDENTITY_UNAVAILABLE
+                - SERVICE_FORBIDDEN
+                - INVALID_FRAME
+                - NOT_SUBSCRIBED
+                - ALREADY_AUTHENTICATED
+                - ATTACHMENT_KIND_MISMATCH
+                - ATTACHMENT_IN_USE
+                - CLIENT_MESSAGE_ID_CONFLICT
+            message:
+              type: string
+            retryable:
+              type: boolean
+              description: >-
+                true for SOCIAL_UNAVAILABLE and CHAT_UNAVAILABLE; the client
+                retries with the same client_message_id.
+        examples:
+          - payload:
+              type: error
+              request_id: 6a000000-0000-4000-8000-000000000002
+              code: FRIENDSHIP_REQUIRED
+              message: Hai người không còn là bạn.
+              retryable: false
+operations:
+  authenticate:
+    action: send
+    channel:
+      $ref: '#/channels/chat'
+    summary: Web → Chat. Authenticate the socket with the REST access token.
+    messages:
+      - $ref: '#/channels/chat/messages/sessionAuthenticate'
+    reply:
+      channel:
+        $ref: '#/channels/chat'
+      messages:
+        - $ref: '#/channels/chat/messages/sessionReady'
+        - $ref: '#/channels/chat/messages/error'
+  subscribe:
+    action: send
+    channel:
+      $ref: '#/channels/chat'
+    summary: Web → Chat. Join a conversation room; Chat asks Social for can_read.
+    messages:
+      - $ref: '#/channels/chat/messages/conversationSubscribe'
+    reply:
+      channel:
+        $ref: '#/channels/chat'
+      messages:
+        - $ref: '#/channels/chat/messages/conversationSubscribed'
+        - $ref: '#/channels/chat/messages/error'
+  unsubscribe:
+    action: send
+    channel:
+      $ref: '#/channels/chat'
+    summary: Web → Chat. Leave a conversation room.
+    messages:
+      - $ref: '#/channels/chat/messages/conversationUnsubscribe'
+    reply:
+      channel:
+        $ref: '#/channels/chat'
+      messages:
+        - $ref: '#/channels/chat/messages/conversationUnsubscribed'
+        - $ref: '#/channels/chat/messages/error'
+  sendMessage:
+    action: send
+    channel:
+      $ref: '#/channels/chat'
+    summary: >-
+      Web → Chat. Send text, or audio/file by an attachment_id uploaded through
+      REST.
+    description: >-
+      Chat asks Social for can_send, writes the message, commits, then
+      acknowledges.
+    messages:
+      - $ref: '#/channels/chat/messages/messageSend'
+    reply:
+      channel:
+        $ref: '#/channels/chat'
+      messages:
+        - $ref: '#/channels/chat/messages/messageAck'
+        - $ref: '#/channels/chat/messages/error'
+  receiveMessageCreated:
+    action: receive
+    channel:
+      $ref: '#/channels/chat'
+    summary: >-
+      Chat → Web. A committed message, pushed to every socket subscribed to the
+      room.
+    messages:
+      - $ref: '#/channels/chat/messages/messageCreated'
+  receiveError:
+    action: receive
+    channel:
+      $ref: '#/channels/chat'
+    summary: Chat → Web. An error not tied to a reply, or tied to one by request_id.
+    messages:
+      - $ref: '#/channels/chat/messages/error'
+components:
+  messages:
+    sessionAuthenticate:
+      name: session.authenticate
+      payload:
+        type: object
+        additionalProperties: false
+        required:
+          - type
+          - request_id
+          - access_token
+        properties:
+          type:
+            type: string
+            const: session.authenticate
+          request_id:
+            type: string
+            format: uuid
+            description: Created by the client for each frame; echoed in the reply.
+          access_token:
+            type: string
+            description: JWT from POST /api/v1/auth/login (aud=webchat).
+      examples:
+        - payload:
+            type: session.authenticate
+            request_id: 6a000000-0000-4000-8000-000000000001
+            access_token: example-token
+    sessionReady:
+      name: session.ready
+      payload:
+        type: object
+        additionalProperties: false
+        required:
+          - type
+          - request_id
+          - session_id
+          - user_id
+          - expires_at
+        properties:
+          type:
+            type: string
+            const: session.ready
+          request_id:
+            type: string
+            format: uuid
+            description: Created by the client for each frame; echoed in the reply.
+          session_id:
+            type: string
+            format: uuid
+          user_id:
+            type: string
+            format: uuid
+          expires_at:
+            type: string
+            format: date-time
+            description: Token expiry; the socket closes then.
+    conversationSubscribe:
+      name: conversation.subscribe
+      payload:
+        type: object
+        additionalProperties: false
+        required:
+          - type
+          - request_id
+          - conversation_id
+        properties:
+          type:
+            type: string
+            const: conversation.subscribe
+          request_id:
+            type: string
+            format: uuid
+            description: Created by the client for each frame; echoed in the reply.
+          conversation_id:
+            type: string
+            format: uuid
+    conversationSubscribed:
+      name: conversation.subscribed
+      payload:
+        type: object
+        additionalProperties: false
+        required:
+          - type
+          - request_id
+          - conversation_id
+          - latest_seq
+        properties:
+          type:
+            type: string
+            const: conversation.subscribed
+          request_id:
+            type: string
+            format: uuid
+            description: Created by the client for each frame; echoed in the reply.
+          conversation_id:
+            type: string
+            format: uuid
+          latest_seq:
+            type: integer
+            minimum: 0
+            maximum: 9007199254740991
+            description: Upper bound for the REST backfill after a reconnect.
+    conversationUnsubscribe:
+      name: conversation.unsubscribe
+      payload:
+        type: object
+        additionalProperties: false
+        required:
+          - type
+          - request_id
+          - conversation_id
+        properties:
+          type:
+            type: string
+            const: conversation.unsubscribe
+          request_id:
+            type: string
+            format: uuid
+            description: Created by the client for each frame; echoed in the reply.
+          conversation_id:
+            type: string
+            format: uuid
+    conversationUnsubscribed:
+      name: conversation.unsubscribed
+      payload:
+        type: object
+        additionalProperties: false
+        required:
+          - type
+          - request_id
+          - conversation_id
+        properties:
+          type:
+            type: string
+            const: conversation.unsubscribed
+          request_id:
+            type: string
+            format: uuid
+            description: Created by the client for each frame; echoed in the reply.
+          conversation_id:
+            type: string
+            format: uuid
+    messageSend:
+      name: message.send
+      payload:
+        type: object
+        additionalProperties: false
+        required:
+          - type
+          - request_id
+          - conversation_id
+          - client_message_id
+          - content
+        properties:
+          type:
+            type: string
+            const: message.send
+          request_id:
+            type: string
+            format: uuid
+            description: Created by the client for each frame; echoed in the reply.
+          conversation_id:
+            type: string
+            format: uuid
+          client_message_id:
+            type: string
+            format: uuid
+            description: >-
+              Created by the client; kept unchanged on every retry of the same
+              message.
+          content:
+            oneOf:
+              - type: object
+                additionalProperties: false
+                required:
+                  - type
+                  - text
+                properties:
+                  type:
+                    type: string
+                    const: text
+                  text:
+                    type: string
+                    minLength: 1
+                    maxLength: 4000
+              - type: object
+                additionalProperties: false
+                required:
+                  - type
+                  - attachment_id
+                properties:
+                  type:
+                    type: string
+                    enum:
+                      - audio
+                      - file
+                  attachment_id:
+                    type: string
+                    format: uuid
+                    description: >
+                      A pending attachment uploaded by the sender to the same
+                      conversation. Its kind must
+
+                      match `type` (ATTACHMENT_KIND_MISMATCH) and it can be
+                      bound only once (ATTACHMENT_IN_USE).
+      examples:
+        - payload:
+            type: message.send
+            request_id: 6a000000-0000-4000-8000-000000000002
+            conversation_id: c1000000-0000-4000-8000-000000000001
+            client_message_id: d1000000-0000-4000-8000-000000000001
+            content:
+              type: text
+              text: Chào Lâm!
+    messageAck:
+      name: message.ack
+      payload:
+        schemaFormat: application/schema+json;version=draft-07
+        schema:
+          type: object
+          additionalProperties: false
+          required:
+            - type
+            - request_id
+            - message
+            - replayed
+          properties:
+            type:
+              type: string
+              const: message.ack
+            request_id:
+              type: string
+              format: uuid
+              description: Created by the client for each frame; echoed in the reply.
+            message:
+              type: object
+              additionalProperties: false
+              required:
+                - id
+                - conversation_id
+                - seq
+                - sender
+                - created_at
+                - client_message_id
+                - content
+              properties:
+                id:
+                  type: string
+                  format: uuid
+                conversation_id:
+                  type: string
+                  format: uuid
+                seq:
+                  type: integer
+                  format: int64
+                  minimum: 1
+                  maximum: 9007199254740991
+                sender:
+                  type: object
+                  additionalProperties: false
+                  required:
+                    - id
+                    - username
+                  properties:
+                    id:
+                      type: string
+                      format: uuid
+                    username:
+                      type: string
+                created_at:
+                  type: string
+                  format: date-time
+                client_message_id:
+                  type: string
+                  format: uuid
+                content:
+                  oneOf:
+                    - type: object
+                      additionalProperties: false
+                      required:
+                        - type
+                        - text
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                            - text
+                        text:
+                          type: string
+                          minLength: 1
+                          maxLength: 4000
+                    - type: object
+                      additionalProperties: false
+                      required:
+                        - type
+                        - attachment
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                            - audio
+                        attachment:
+                          allOf:
+                            - type: object
+                              additionalProperties: false
+                              required:
+                                - id
+                                - kind
+                                - file_name
+                                - media_type
+                                - byte_size
+                              properties:
+                                id:
+                                  type: string
+                                  format: uuid
+                                kind:
+                                  type: string
+                                  enum:
+                                    - audio
+                                    - file
+                                file_name:
+                                  type: string
+                                media_type:
+                                  type: string
+                                byte_size:
+                                  type: integer
+                                  minimum: 1
+                                duration_ms:
+                                  type: integer
+                                  minimum: 0
+                                  maximum: 300000
+                                  description: >-
+                                    Present only when kind=audio (required
+                                    inside StoredAudioContent).
+                            - required:
+                                - duration_ms
+                              properties:
+                                kind:
+                                  const: audio
+                    - type: object
+                      additionalProperties: false
+                      required:
+                        - type
+                        - attachment
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                            - file
+                        attachment:
+                          allOf:
+                            - type: object
+                              additionalProperties: false
+                              required:
+                                - id
+                                - kind
+                                - file_name
+                                - media_type
+                                - byte_size
+                              properties:
+                                id:
+                                  type: string
+                                  format: uuid
+                                kind:
+                                  type: string
+                                  enum:
+                                    - audio
+                                    - file
+                                file_name:
+                                  type: string
+                                media_type:
+                                  type: string
+                                byte_size:
+                                  type: integer
+                                  minimum: 1
+                                duration_ms:
+                                  type: integer
+                                  minimum: 0
+                                  maximum: 300000
+                                  description: >-
+                                    Present only when kind=audio (required
+                                    inside StoredAudioContent).
+                            - properties:
+                                kind:
+                                  const: file
+                  discriminator:
+                    propertyName: type
+                    mapping:
+                      text: '#/components/schemas/TextContent'
+                      audio: '#/components/schemas/StoredAudioContent'
+                      file: '#/components/schemas/StoredFileContent'
+            replayed:
+              type: boolean
+              description: >-
+                true when the same client_message_id and content were already
+                stored.
+    messageCreated:
+      name: message.created
+      payload:
+        schemaFormat: application/schema+json;version=draft-07
+        schema:
+          type: object
+          additionalProperties: false
+          required:
+            - type
+            - message
+          properties:
+            type:
+              type: string
+              const: message.created
+            message:
+              type: object
+              additionalProperties: false
+              required:
+                - id
+                - conversation_id
+                - seq
+                - sender
+                - created_at
+                - client_message_id
+                - content
+              properties:
+                id:
+                  type: string
+                  format: uuid
+                conversation_id:
+                  type: string
+                  format: uuid
+                seq:
+                  type: integer
+                  format: int64
+                  minimum: 1
+                  maximum: 9007199254740991
+                sender:
+                  type: object
+                  additionalProperties: false
+                  required:
+                    - id
+                    - username
+                  properties:
+                    id:
+                      type: string
+                      format: uuid
+                    username:
+                      type: string
+                created_at:
+                  type: string
+                  format: date-time
+                client_message_id:
+                  type: string
+                  format: uuid
+                content:
+                  oneOf:
+                    - type: object
+                      additionalProperties: false
+                      required:
+                        - type
+                        - text
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                            - text
+                        text:
+                          type: string
+                          minLength: 1
+                          maxLength: 4000
+                    - type: object
+                      additionalProperties: false
+                      required:
+                        - type
+                        - attachment
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                            - audio
+                        attachment:
+                          allOf:
+                            - type: object
+                              additionalProperties: false
+                              required:
+                                - id
+                                - kind
+                                - file_name
+                                - media_type
+                                - byte_size
+                              properties:
+                                id:
+                                  type: string
+                                  format: uuid
+                                kind:
+                                  type: string
+                                  enum:
+                                    - audio
+                                    - file
+                                file_name:
+                                  type: string
+                                media_type:
+                                  type: string
+                                byte_size:
+                                  type: integer
+                                  minimum: 1
+                                duration_ms:
+                                  type: integer
+                                  minimum: 0
+                                  maximum: 300000
+                                  description: >-
+                                    Present only when kind=audio (required
+                                    inside StoredAudioContent).
+                            - required:
+                                - duration_ms
+                              properties:
+                                kind:
+                                  const: audio
+                    - type: object
+                      additionalProperties: false
+                      required:
+                        - type
+                        - attachment
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                            - file
+                        attachment:
+                          allOf:
+                            - type: object
+                              additionalProperties: false
+                              required:
+                                - id
+                                - kind
+                                - file_name
+                                - media_type
+                                - byte_size
+                              properties:
+                                id:
+                                  type: string
+                                  format: uuid
+                                kind:
+                                  type: string
+                                  enum:
+                                    - audio
+                                    - file
+                                file_name:
+                                  type: string
+                                media_type:
+                                  type: string
+                                byte_size:
+                                  type: integer
+                                  minimum: 1
+                                duration_ms:
+                                  type: integer
+                                  minimum: 0
+                                  maximum: 300000
+                                  description: >-
+                                    Present only when kind=audio (required
+                                    inside StoredAudioContent).
+                            - properties:
+                                kind:
+                                  const: file
+                  discriminator:
+                    propertyName: type
+                    mapping:
+                      text: '#/components/schemas/TextContent'
+                      audio: '#/components/schemas/StoredAudioContent'
+                      file: '#/components/schemas/StoredFileContent'
+    error:
+      name: error
+      payload:
+        type: object
+        additionalProperties: false
+        required:
+          - type
+          - request_id
+          - code
+          - message
+          - retryable
+        properties:
+          type:
+            type: string
+            const: error
+          request_id:
+            oneOf:
+              - type: string
+                format: uuid
+                description: Created by the client for each frame; echoed in the reply.
+              - type: 'null'
+            description: The frame that failed, or null for an error not tied to a frame.
+          code:
+            type: string
+            enum:
+              - UNAUTHENTICATED
+              - INVALID_CREDENTIALS
+              - USERNAME_TAKEN
+              - USER_NOT_FOUND
+              - NOT_FOUND
+              - GOOGLE_DISABLED
+              - GOOGLE_UNAVAILABLE
+              - GOOGLE_CODE_INVALID
+              - OAUTH_STATE_INVALID
+              - VALIDATION_ERROR
+              - SELF_INVITE
+              - ALREADY_FRIENDS
+              - INCOMING_REQUEST_EXISTS
+              - ACTION_FORBIDDEN
+              - REQUEST_NOT_FOUND
+              - REQUEST_CLOSED
+              - INVALID_CURSOR
+              - SELF_CONVERSATION
+              - FRIENDSHIP_REQUIRED
+              - CONVERSATION_NOT_FOUND
+              - INVALID_MEMBERS
+              - IDEMPOTENCY_CONFLICT
+              - ATTACHMENT_NOT_FOUND
+              - INVALID_ATTACHMENT
+              - UPLOAD_TOO_LARGE
+              - UNSUPPORTED_MEDIA_TYPE
+              - INVALID_RANGE
+              - READ_AHEAD
+              - SUMMARY_UNAVAILABLE
+              - SOCIAL_UNAVAILABLE
+              - CHAT_UNAVAILABLE
+              - IDENTITY_UNAVAILABLE
+              - SERVICE_FORBIDDEN
+              - INVALID_FRAME
+              - NOT_SUBSCRIBED
+              - ALREADY_AUTHENTICATED
+              - ATTACHMENT_KIND_MISMATCH
+              - ATTACHMENT_IN_USE
+              - CLIENT_MESSAGE_ID_CONFLICT
+          message:
+            type: string
+          retryable:
+            type: boolean
+            description: >-
+              true for SOCIAL_UNAVAILABLE and CHAT_UNAVAILABLE; the client
+              retries with the same client_message_id.
+      examples:
+        - payload:
+            type: error
+            request_id: 6a000000-0000-4000-8000-000000000002
+            code: FRIENDSHIP_REQUIRED
+            message: Hai người không còn là bạn.
+            retryable: false
+  schemas:
+    RequestId:
+      type: string
+      format: uuid
+      description: Created by the client for each frame; echoed in the reply.
+    OutgoingContent:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required:
+            - type
+            - text
+          properties:
+            type:
+              type: string
+              const: text
+            text:
+              type: string
+              minLength: 1
+              maxLength: 4000
+        - type: object
+          additionalProperties: false
+          required:
+            - type
+            - attachment_id
+          properties:
+            type:
+              type: string
+              enum:
+                - audio
+                - file
+            attachment_id:
+              type: string
+              format: uuid
+              description: >
+                A pending attachment uploaded by the sender to the same
+                conversation. Its kind must
+
+                match `type` (ATTACHMENT_KIND_MISMATCH) and it can be bound only
+                once (ATTACHMENT_IN_USE).

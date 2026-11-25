@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>WebChat API – Swagger UI (demo trên Prism mock)</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <style>
+    body { margin: 0; }
+    #mock-bar {
+      position: sticky; top: 0; z-index: 10;
+      display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+      padding: 10px 20px; background: #1f2937; color: #f9fafb;
+      font: 14px/1.4 system-ui, sans-serif;
+    }
+    #mock-bar b { color: #fbbf24; }
+    #mock-bar input { width: 320px; padding: 4px 8px; font: 13px ui-monospace, monospace; }
+    #mock-bar code { background: #374151; padding: 1px 5px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <!--
+    Chạy từ thư mục gốc repo:
+      npx @stoplight/prism-cli mock webchat/contracts/openapi.yaml -p 4010
+      npx http-server -p 8081 -c-1
+    Mở http://localhost:8081/docs/demo/swagger.html, chọn server http://localhost:4010.
+    Ô "Prefer" gửi kèm header Prefer cho Prism để chọn response lỗi, ví dụ
+    "code=401" hoặc "code=409, example=incomingRequestExists". Để trống = response thành công.
+  -->
+  <div id="mock-bar">
+    <span><b>Prism mock</b> · header <code>Prefer</code>:</span>
+    <input id="prefer" placeholder="để trống = thành công · ví dụ: code=401" list="prefer-presets">
+    <datalist id="prefer-presets">
+      <option value="code=201">
+      <option value="code=401">
+      <option value="code=403">
+      <option value="code=404">
+      <option value="code=409">
+      <option value="code=409, example=incomingRequestExists">
+      <option value="code=422">
+      <option value="example=empty">
+      <option value="code=503">
+    </datalist>
+    <span id="prefer-state">Đang gửi: thành công (2xx nhỏ nhất)</span>
+  </div>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    const preferInput = document.getElementById('prefer');
+    const preferState = document.getElementById('prefer-state');
+    preferInput.addEventListener('input', () => {
+      const v = preferInput.value.trim();
+      preferState.textContent = v ? 'Đang gửi: Prefer: ' + v : 'Đang gửi: thành công (2xx nhỏ nhất)';
+    });
+    window.ui = SwaggerUIBundle({
+      url: '../../webchat/contracts/openapi.yaml',
+      dom_id: '#swagger-ui',
+      deepLinking: true,
+      tryItOutEnabled: true,
+      displayRequestDuration: true,
+      persistAuthorization: true,
+      requestInterceptor: (req) => {
+        const v = preferInput.value.trim();
+        if (v && req.url.includes(':4010')) req.headers['Prefer'] = v;
+        return req;
+      },
+    });
+  </script>
+</body>
+</html>

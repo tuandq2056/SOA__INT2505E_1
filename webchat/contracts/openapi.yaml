@@ -2,12 +2,15 @@ openapi: 3.1.1
 info:
   title: WebChat REST API
   version: 1.0.0
+  contact:
+    name: Nhóm 9 – INT3505E_1
+    url: https://github.com/tuandq2056/SOA__INT2505E_1
   license:
     name: Course project - internal use
   description: |
-    REST contract for the WebChat course project. Derived from `docs/spec/webchat-api-spec.md` v1.0.0
-    (2026-11-20) because the original `openapi.yaml` was not supplied. The prose is the source of
-    truth for behaviour; this file is the source of truth for the wire format.
+    REST contract for the WebChat course project (Service-Oriented Architecture, week 12 design
+    review). This file is the source of truth for the wire format of the REST API. WebSocket events
+    on `/ws/v1/chat` are described separately in `asyncapi.yaml` in the same folder.
 
     Conventions: JSON UTF-8, `snake_case`, UUID ids, RFC 3339 UTC timestamps ending in `Z`. Browser
     tokens have `aud=webchat`. Service tokens have the callee's audience and are accepted only on
@@ -17,6 +20,8 @@ info:
 servers:
   - url: http://localhost:8080
     description: Local docker compose stack
+  - url: http://localhost:4010
+    description: Prism mock (npx @stoplight/prism-cli mock webchat/contracts/openapi.yaml -p 4010)
 tags:
   - name: Identity
     description: Accounts, usernames, token issue and user lookup.
@@ -41,17 +46,30 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/Credentials' }
+            examples:
+              long:
+                summary: Long registers
+                value: { username: long, password: example123 }
       responses:
         '201':
           description: Created
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PublicUser' }
+              examples:
+                long:
+                  value: { id: a1000000-0000-4000-8000-000000000001, username: long }
         '409':
           description: USERNAME_TAKEN
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                usernameTaken:
+                  summary: Username differs only by case from an existing one
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000011
+                    error: { code: USERNAME_TAKEN, message: Username đã được sử dụng. }
         '422':
           description: VALIDATION_ERROR
           content:
@@ -64,34 +82,68 @@ paths:
       operationId: login
       security: []
       summary: Exchange credentials for an access token
-      description: Wrong username and wrong password return the same error code and message.
+      description: |
+        Wrong username and wrong password return the same error code and message. The body is not
+        checked against the registration rules, so a username in the wrong format also returns 401
+        INVALID_CREDENTIALS; 422 is only for a missing field or a wrong JSON type.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Credentials' }
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+            examples:
+              long:
+                summary: Long logs in
+                value: { username: long, password: example123 }
+              lam:
+                summary: Lâm logs in
+                value: { username: lam, password: example456 }
       responses:
         '200':
           description: OK
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TokenResponse' }
+              examples:
+                long:
+                  summary: Token for Long (illustrative JWT)
+                  value:
+                    access_token: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhMTAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJ1c2VybmFtZSI6ImxvbmciLCJhdWQiOiJ3ZWJjaGF0In0.example-signature
+                    token_type: Bearer
+                    expires_in: 3600
+                    user: { id: a1000000-0000-4000-8000-000000000001, username: long }
         '401':
           description: INVALID_CREDENTIALS
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                invalidCredentials:
+                  summary: Wrong username or wrong password (same code and message)
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000001
+                    error: { code: INVALID_CREDENTIALS, message: Sai tên đăng nhập hoặc mật khẩu. }
         '422':
           description: VALIDATION_ERROR
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                missingPassword:
+                  summary: A required field is missing
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000002
+                    error:
+                      code: VALIDATION_ERROR
+                      message: Dữ liệu không hợp lệ.
+                      fields: [{ field: password, reason: required }]
 
   /api/v1/users/me:
     get:
       tags: [Identity]
       operationId: getMe
       summary: The authenticated user
+      description: Returns the public profile of the user in the bearer token.
       security: [{ bearerAuth: [] }]
       responses:
         '200':
@@ -107,18 +159,24 @@ paths:
       tags: [Identity]
       operationId: getUserByUsername
       summary: Exact username lookup, case-insensitive
+      description: Exact match after lowercasing. Used to find a person before sending a friend request.
       security: [{ bearerAuth: [] }]
       parameters:
         - name: username
           in: path
           required: true
           schema: { type: string, minLength: 3, maxLength: 32 }
+          example: Lam
       responses:
         '200':
           description: OK
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PublicUser' }
+              examples:
+                lam:
+                  summary: "`Lam` matches the stored lowercase `lam`"
+                  value: { id: a1000000-0000-4000-8000-000000000002, username: lam }
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '404':
@@ -126,6 +184,13 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                userNotFound:
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000003
+                    error: { code: USER_NOT_FOUND, message: Không tìm thấy người dùng. }
+        '422':
+          $ref: '#/components/responses/ValidationError'
 
   /api/v1/auth/google/start:
     get:
@@ -180,6 +245,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          $ref: '#/components/responses/ValidationError'
         '501':
           description: GOOGLE_DISABLED
           content:
@@ -205,17 +272,38 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/FriendRequestCreate' }
+            examples:
+              longInvitesLam:
+                summary: Long invites Lâm
+                value: { recipient_id: a1000000-0000-4000-8000-000000000002 }
       responses:
         '201':
           description: Created
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FriendRequest' }
+              examples:
+                created:
+                  value:
+                    id: f1000000-0000-4000-8000-000000000001
+                    sender: { id: a1000000-0000-4000-8000-000000000001, username: long }
+                    recipient: { id: a1000000-0000-4000-8000-000000000002, username: lam }
+                    status: pending
+                    created_at: '2026-11-26T02:00:00Z'
         '200':
           description: Existing pending request in the same direction
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FriendRequest' }
+              examples:
+                replayed:
+                  summary: Long sends the same invitation again
+                  value:
+                    id: f1000000-0000-4000-8000-000000000001
+                    sender: { id: a1000000-0000-4000-8000-000000000001, username: long }
+                    recipient: { id: a1000000-0000-4000-8000-000000000002, username: lam }
+                    status: pending
+                    created_at: '2026-11-26T02:00:00Z'
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '404':
@@ -223,16 +311,39 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                userNotFound:
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000004
+                    error: { code: USER_NOT_FOUND, message: Không tìm thấy người nhận. }
         '409':
           description: ALREADY_FRIENDS or INCOMING_REQUEST_EXISTS (see error.related_id)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                incomingRequestExists:
+                  summary: Lâm already invited Long; accept that one instead
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000005
+                    error:
+                      code: INCOMING_REQUEST_EXISTS
+                      message: Người này đã gửi lời mời cho bạn.
+                      related_id: f1000000-0000-4000-8000-000000000002
+                alreadyFriends:
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000006
+                    error: { code: ALREADY_FRIENDS, message: Hai người đã là bạn. }
         '422':
           description: SELF_INVITE or VALIDATION_ERROR
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                selfInvite:
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000007
+                    error: { code: SELF_INVITE, message: Không thể tự kết bạn với chính mình. }
         '503':
           description: IDENTITY_UNAVAILABLE
           content:
@@ -242,6 +353,7 @@ paths:
       tags: [Social]
       operationId: listFriendRequests
       summary: List incoming or outgoing requests
+      description: Cursor-paginated. Filters by direction (default incoming) and status (default pending).
       security: [{ bearerAuth: [] }]
       parameters:
         - name: direction
@@ -283,12 +395,24 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/FriendRequestDecision' }
+            examples:
+              accept:
+                summary: Lâm accepts
+                value: { status: accepted }
       responses:
         '200':
           description: The request after the decision
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FriendRequest' }
+              examples:
+                accepted:
+                  value:
+                    id: f1000000-0000-4000-8000-000000000001
+                    sender: { id: a1000000-0000-4000-8000-000000000001, username: long }
+                    recipient: { id: a1000000-0000-4000-8000-000000000002, username: lam }
+                    status: accepted
+                    created_at: '2026-11-26T02:00:00Z'
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '403':
@@ -296,16 +420,33 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                senderCannotAccept:
+                  summary: Long (the sender) tries to accept his own invitation
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000008
+                    error: { code: ACTION_FORBIDDEN, message: Chỉ người nhận được chấp nhận hoặc từ chối. }
         '404':
           description: REQUEST_NOT_FOUND
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                requestNotFound:
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000009
+                    error: { code: REQUEST_NOT_FOUND, message: Không tìm thấy lời mời. }
         '409':
           description: REQUEST_CLOSED
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                requestClosed:
+                  summary: Long cancelled before Lâm accepted
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000010
+                    error: { code: REQUEST_CLOSED, message: Lời mời đã được xử lý. }
         '422':
           description: VALIDATION_ERROR
           content:
@@ -317,6 +458,7 @@ paths:
       tags: [Social]
       operationId: listFriends
       summary: Friends of the caller, ordered by username then id
+      description: Cursor-paginated list of current friends as PublicUser.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: '#/components/parameters/Limit'
@@ -330,7 +472,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '422':
-          description: INVALID_CURSOR
+          description: INVALID_CURSOR or VALIDATION_ERROR
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -354,6 +496,8 @@ paths:
           description: Removed (or already absent)
         '401':
           $ref: '#/components/responses/Unauthenticated'
+        '422':
+          $ref: '#/components/responses/ValidationError'
 
   /api/v1/conversations/direct/{friend_id}:
     put:
@@ -375,11 +519,27 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DirectConversation' }
+              examples:
+                longOpens:
+                  summary: Long opens the chat; peer is Lâm
+                  value:
+                    id: c1000000-0000-4000-8000-000000000001
+                    type: direct
+                    peer: { id: a1000000-0000-4000-8000-000000000002, username: lam }
+                    created_at: '2026-11-26T02:05:00Z'
         '200':
           description: Existing conversation
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DirectConversation' }
+              examples:
+                lamOpens:
+                  summary: Lâm opens the same chat; same id, peer is Long
+                  value:
+                    id: c1000000-0000-4000-8000-000000000001
+                    type: direct
+                    peer: { id: a1000000-0000-4000-8000-000000000001, username: long }
+                    created_at: '2026-11-26T02:05:00Z'
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '403':
@@ -387,8 +547,14 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                notFriends:
+                  summary: The two users are not (or no longer) friends
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000012
+                    error: { code: FRIENDSHIP_REQUIRED, message: Hai người chưa là bạn. }
         '422':
-          description: SELF_CONVERSATION
+          description: SELF_CONVERSATION or VALIDATION_ERROR
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -447,6 +613,7 @@ paths:
       tags: [Social]
       operationId: listConversations
       summary: Conversations of the caller
+      description: Cursor-paginated direct and group conversations the caller belongs to.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: '#/components/parameters/Limit'
@@ -460,7 +627,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '422':
-          description: INVALID_CURSOR
+          description: INVALID_CURSOR or VALIDATION_ERROR
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -487,12 +654,15 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          $ref: '#/components/responses/ValidationError'
 
   /api/v1/conversations/{conversation_id}/members:
     get:
       tags: [Social]
       operationId: listConversationMembers
       summary: Members, ordered by username then id
+      description: Cursor-paginated members of a conversation the caller belongs to; an outsider gets 404.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: '#/components/parameters/ConversationId'
@@ -512,7 +682,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '422':
-          description: INVALID_CURSOR
+          description: INVALID_CURSOR or VALIDATION_ERROR
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -568,7 +738,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '422':
-          description: INVALID_ATTACHMENT
+          description: INVALID_ATTACHMENT or VALIDATION_ERROR
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -611,6 +781,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          $ref: '#/components/responses/ValidationError'
         '503':
           $ref: '#/components/responses/ChatServiceUnavailable'
 
@@ -621,7 +793,9 @@ paths:
       summary: History page
       description: |
         Newest and older pages are descending by `seq`; a backfill page (`after_seq`) is ascending.
-        `through_seq` is allowed only with `after_seq` and must be ≥ it. Bounds are open.
+        `before_seq` and `after_seq` are exclusive bounds and cannot be used together. `through_seq`
+        is an inclusive upper bound, allowed only with `after_seq` and must be ≥ it; for example
+        `after_seq=40&through_seq=45` returns seq 41–45.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: '#/components/parameters/ConversationId'
@@ -634,7 +808,7 @@ paths:
           schema: { type: integer, format: int64, minimum: 0, maximum: 9007199254740991 }
         - name: through_seq
           in: query
-          description: Only with after_seq, and must be ≥ after_seq.
+          description: Inclusive upper bound. Only with after_seq, and must be ≥ after_seq.
           schema: { type: integer, format: int64, minimum: 0, maximum: 9007199254740991 }
       responses:
         '200':
@@ -642,6 +816,33 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MessagePage' }
+              examples:
+                newestPage:
+                  summary: Lâm reloads the page with limit=3; newest first (descending seq), Long sent seq 1-12
+                  value:
+                    items:
+                      - id: e1000000-0000-4000-8000-000000000012
+                        conversation_id: c1000000-0000-4000-8000-000000000001
+                        seq: 12
+                        sender: { id: a1000000-0000-4000-8000-000000000001, username: long }
+                        created_at: '2026-11-26T14:47:30Z'
+                        client_message_id: d1000000-0000-4000-8000-000000000012
+                        content: { type: text, text: Mà ai chạy Prism lúc demo vậy? }
+                      - id: e1000000-0000-4000-8000-000000000011
+                        conversation_id: c1000000-0000-4000-8000-000000000001
+                        seq: 11
+                        sender: { id: a1000000-0000-4000-8000-000000000001, username: long }
+                        created_at: '2026-11-26T14:41:10Z'
+                        client_message_id: d1000000-0000-4000-8000-000000000011
+                        content: { type: text, text: Báo cáo nộp trước 23h thứ Sáu nha. }
+                      - id: e1000000-0000-4000-8000-000000000010
+                        conversation_id: c1000000-0000-4000-8000-000000000001
+                        seq: 10
+                        sender: { id: a1000000-0000-4000-8000-000000000001, username: long }
+                        created_at: '2026-11-26T14:40:00Z'
+                        client_message_id: d1000000-0000-4000-8000-000000000010
+                        content: { type: text, text: "Lâm làm slide giúp mình nhé, tiện sửa luôn phần demo." }
+                    has_more: true
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '404':
@@ -649,11 +850,23 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                outsider:
+                  summary: An outsider and a missing id get the same answer
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000013
+                    error: { code: CONVERSATION_NOT_FOUND, message: Không tìm thấy hội thoại. }
         '422':
-          description: INVALID_RANGE
+          description: INVALID_RANGE or VALIDATION_ERROR
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                invalidRange:
+                  summary: before_seq and after_seq used together
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000014
+                    error: { code: INVALID_RANGE, message: Không dùng before_seq cùng after_seq. }
         '503':
           $ref: '#/components/responses/ChatServiceUnavailable'
 
@@ -689,6 +902,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          $ref: '#/components/responses/ValidationError'
         '503':
           $ref: '#/components/responses/ChatServiceUnavailable'
 
@@ -697,6 +912,7 @@ paths:
       tags: [Chat]
       operationId: getReadState
       summary: Read marker and unread text count
+      description: Returns last_read_seq (0 if never read), latest_seq and the unread text count from other people.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: '#/components/parameters/ConversationId'
@@ -706,33 +922,10 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ReadState' }
-        '401':
-          $ref: '#/components/responses/Unauthenticated'
-        '404':
-          description: CONVERSATION_NOT_FOUND
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
-        '503':
-          $ref: '#/components/responses/ChatServiceUnavailable'
-    put:
-      tags: [Chat]
-      operationId: putReadState
-      summary: Advance the read marker monotonically
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: '#/components/parameters/ConversationId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/ReadStateUpdate' }
-      responses:
-        '200':
-          description: The state after max(old, through_seq)
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ReadState' }
+              examples:
+                unread:
+                  summary: Lâm opens the chat after Long sent 12 texts
+                  value: { last_read_seq: 0, latest_seq: 12, unread_text_count: 12 }
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '404':
@@ -741,10 +934,52 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '422':
-          description: READ_AHEAD
+          $ref: '#/components/responses/ValidationError'
+        '503':
+          $ref: '#/components/responses/ChatServiceUnavailable'
+    put:
+      tags: [Chat]
+      operationId: putReadState
+      summary: Advance the read marker monotonically
+      description: Sets the marker to max(old, through_seq) atomically. through_seq above latest_seq returns 422 READ_AHEAD.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReadStateUpdate' }
+            examples:
+              readAll:
+                value: { through_seq: 12 }
+      responses:
+        '200':
+          description: The state after max(old, through_seq)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReadState' }
+              examples:
+                caughtUp:
+                  value: { last_read_seq: 12, latest_seq: 12, unread_text_count: 0 }
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: CONVERSATION_NOT_FOUND
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          description: READ_AHEAD or VALIDATION_ERROR
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                readAhead:
+                  summary: through_seq is above latest_seq
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000015
+                    error: { code: READ_AHEAD, message: through_seq vượt quá latest_seq. }
         '503':
           $ref: '#/components/responses/ChatServiceUnavailable'
 
@@ -767,6 +1002,29 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/UnreadSummary' }
+              examples:
+                ready:
+                  summary: Lâm has not read anything yet; Long sent 12 texts (seq 1-12)
+                  value:
+                    status: ready
+                    summary: "long chốt nộp báo cáo trước 23h thứ Sáu, nhờ lam làm slide và sửa phần demo. long hỏi ai chạy Prism lúc demo, chưa có câu trả lời."
+                    source_count: 12
+                    omitted_count: 0
+                    last_read_seq: 0
+                    snapshot_seq: 12
+                    source_from_seq: 1
+                    source_to_seq: 12
+                empty:
+                  summary: Lâm has already read up to seq 12; nothing unread, so the LLM is not called
+                  value:
+                    status: empty
+                    summary: null
+                    source_count: 0
+                    omitted_count: 0
+                    last_read_seq: 12
+                    snapshot_seq: 12
+                    source_from_seq: null
+                    source_to_seq: null
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '404':
@@ -774,11 +1032,25 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                notMember:
+                  summary: Caller is not a member of the conversation
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000016
+                    error: { code: CONVERSATION_NOT_FOUND, message: Không tìm thấy hội thoại. }
+        '422':
+          $ref: '#/components/responses/ValidationError'
         '503':
           description: SUMMARY_UNAVAILABLE, SOCIAL_UNAVAILABLE, or CHAT_UNAVAILABLE
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                summaryUnavailable:
+                  summary: The LLM provider timed out; the read marker is unchanged
+                  value:
+                    request_id: 55000000-0000-4000-8000-000000000017
+                    error: { code: SUMMARY_UNAVAILABLE, message: "Chưa tóm tắt được, vui lòng thử lại sau." }
 
   /internal/v1/users/{user_id}:
     get:
@@ -810,6 +1082,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          $ref: '#/components/responses/ValidationError'
 
   /internal/v1/conversations/{conversation_id}/members/{user_id}/permissions:
     get:
@@ -845,6 +1119,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          $ref: '#/components/responses/ValidationError'
 
 components:
   securitySchemes:
@@ -886,6 +1162,17 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
+          examples:
+            missingToken:
+              summary: No bearer token, or the token is expired or has the wrong audience
+              value:
+                request_id: 55000000-0000-4000-8000-000000000000
+                error: { code: UNAUTHENTICATED, message: Cần đăng nhập. }
+    ValidationError:
+      description: VALIDATION_ERROR (malformed path, query or body value)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
     ChatServiceUnavailable:
       description: SOCIAL_UNAVAILABLE or CHAT_UNAVAILABLE
       content:
@@ -907,6 +1194,14 @@ components:
           type: string
           minLength: 8
           maxLength: 128
+
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 1, maxLength: 128 }
+        password: { type: string, minLength: 1, maxLength: 128 }
 
     GoogleExchange:
       type: object
@@ -1122,7 +1417,7 @@ components:
           type: integer
           minimum: 0
           maximum: 300000
-          description: Present only when kind=audio.
+          description: Present only when kind=audio (required inside StoredAudioContent).
 
     TextContent:
       type: object
@@ -1138,7 +1433,12 @@ components:
       required: [type, attachment]
       properties:
         type: { type: string, enum: [audio] }
-        attachment: { $ref: '#/components/schemas/Attachment' }
+        attachment:
+          allOf:
+            - $ref: '#/components/schemas/Attachment'
+            - required: [duration_ms]
+              properties:
+                kind: { const: audio }
 
     StoredFileContent:
       type: object
@@ -1146,13 +1446,23 @@ components:
       required: [type, attachment]
       properties:
         type: { type: string, enum: [file] }
-        attachment: { $ref: '#/components/schemas/Attachment' }
+        attachment:
+          allOf:
+            - $ref: '#/components/schemas/Attachment'
+            - properties:
+                kind: { const: file }
 
     MessageContent:
       oneOf:
         - $ref: '#/components/schemas/TextContent'
         - $ref: '#/components/schemas/StoredAudioContent'
         - $ref: '#/components/schemas/StoredFileContent'
+      discriminator:
+        propertyName: type
+        mapping:
+          text: '#/components/schemas/TextContent'
+          audio: '#/components/schemas/StoredAudioContent'
+          file: '#/components/schemas/StoredFileContent'
 
     Message:
       type: object
